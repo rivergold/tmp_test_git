@@ -1,0 +1,67 @@
+name: Sync main -> dev (after dev->main merged)
+
+on:
+  pull_request:
+    types: [closed]
+    branches: ["main"] # 如果用 master，这里写 "master"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch all branches
+        run: git fetch origin +refs/heads/*:refs/remotes/origin/*
+
+      - name: Prepare local dev
+        run: |
+          if git ls-remote --heads origin dev | grep -q dev; then
+            git checkout -B dev origin/dev
+          else
+            echo "dev does not exist, creating from main..."
+            git checkout -B dev origin/main
+            git push origin dev
+          fi
+
+      - name: Merge main into dev (allow merge commit)
+        id: merge_step
+        shell: bash
+        run: |
+          set -e
+          if git merge --no-edit origin/main; then
+            echo "merged=ok" >> $GITHUB_OUTPUT
+          else
+            echo "merged=conflict" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push dev if merge succeeded
+        if: steps.merge_step.outputs.merged == 'ok'
+        run: git push origin dev
+
+      - name: Create PR main -> dev if merge failed or policy blocks push
+        if: steps.merge_step.outputs.merged != 'ok'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base dev \
+            --head main \
+            --title "chore: sync main → dev" \
+            --body "Auto-created because direct merge was not possible (conflict/policy). Please review."
